@@ -6,6 +6,7 @@ directly to SQLite via save_to_db().
 """
 
 import logging
+import os
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -74,8 +75,11 @@ def incremental_sync(target_date: str = None, save_raw: bool = False, parse_trac
     PROJECT_DIR = Path(__file__).parent.parent
     PROFILE_DIR = PROJECT_DIR / "browser_profile"
 
-    # Load .env if present
-    import os
+    # When launched as an MCP server, the host's CWD may be a system path
+    # with no write access (e.g. C:\Windows\System32 on Windows). SeleniumBase
+    # creates downloaded_files/ relative to CWD, which then crashes the sync
+    # with PermissionError. Move into PROJECT_DIR. See issue #35.
+    os.chdir(str(PROJECT_DIR))
 
     env_file = PROJECT_DIR / ".env"
     if env_file.exists():
