@@ -2,12 +2,17 @@
 Unit tests for FIT file parsing (garmin_mcp/parse_activity_files.py).
 """
 
+from pathlib import Path
+from unittest.mock import patch
+
 import pytest
 
+from garmin_mcp import parse_activity_files
 from garmin_mcp.parse_activity_files import (
     _activity_id_from_zip_filename,
     _extract_activity_id_from_member,
     _semicircles_to_degrees,
+    parse_trackpoints_from_directory,
 )
 
 
@@ -79,6 +84,37 @@ class TestActivityIdFromZipFilename:
 
         assert _activity_id_from_zip_filename(Path("invalid.zip")) is None
         assert _activity_id_from_zip_filename(Path("12345_small.zip")) is None
+
+
+class TestDirectoryWalkFiltering:
+    """When activity_ids is supplied, zips that can be identified from
+    their filename as not-wanted should never be unzipped or parsed.
+    """
+
+    def test_unwanted_zips_are_not_parsed(self, tmp_path):
+        # Three zips in a fit/ directory, each with a different activity ID
+        # in the filename
+        for fname in (
+            "2026-04-19_11111111_a.zip",
+            "2026-04-19_22222222_b.zip",
+            "2026-04-19_33333333_c.zip",
+        ):
+            (tmp_path / fname).touch()
+
+        opened: list[int] = []
+
+        def fake_parse(zip_path: Path):
+            aid = _activity_id_from_zip_filename(zip_path)
+            opened.append(aid)
+            # Pretend the parse succeeded with a single trackpoint
+            return aid, [(0, "2026-04-19T08:00:00", 0.0, 0.0, None, None, None, None, None, None, None)]
+
+        with patch.object(parse_activity_files, "parse_trackpoints_from_fit_archive", fake_parse):
+            results = parse_trackpoints_from_directory(tmp_path, activity_ids=[22222222])
+
+        assert [aid for aid, _ in results] == [22222222]
+        # The other two zips must NOT have been opened
+        assert opened == [22222222]
 
 
 class TestCoordinateConversion:

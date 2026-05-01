@@ -145,17 +145,26 @@ def parse_trackpoints_from_directory(
     if not fit_dir.exists():
         return results
 
-    # Find all ZIP files
+    wanted = set(activity_ids) if activity_ids is not None else None
     zip_files = list(fit_dir.glob("*.zip"))
 
     for zip_path in zip_files:
+        # Cheap pre-filter: when caller supplied activity_ids, try to
+        # read the activity ID from the zip filename before doing the
+        # expensive unzip + FIT parse. If the filename gives us a clear
+        # ID and it's not in the wanted set, skip the zip entirely.
+        if wanted is not None:
+            cheap_id = _activity_id_from_zip_filename(zip_path)
+            if cheap_id is not None and cheap_id not in wanted:
+                continue
+
         activity_id, rows = parse_trackpoints_from_fit_archive(zip_path)
 
         if activity_id is None or not rows:
             continue
 
         # Filter by activity_ids if provided
-        if activity_ids is not None and activity_id not in activity_ids:
+        if wanted is not None and activity_id not in wanted:
             continue
 
         results.append((activity_id, rows))
