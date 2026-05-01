@@ -741,6 +741,70 @@ def garmin_activity_detail(activity_id: int = 0, last: bool = False) -> str:
 
 
 # ---------------------------------------------------------------------------
+# garmin_activity_trackpoints
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def garmin_activity_trackpoints(activity_id: int, limit: int = 500, offset: int = 0) -> str:
+    """GPS trackpoints for an activity — lat/lon, altitude, distance, speed,
+    HR, cadence, power, temperature, in chronological order.
+
+    Trackpoints are sampled ~1/second, so a 1-hour activity has ~3600 points.
+    Pass `limit` and `offset` to page through them; the response includes
+    `total_count` so callers know the full size.
+
+    Best for: elevation profile, HR drift over time, GPS track inspection,
+    pacing analysis, climb segmentation. For aggregate stats (splits, zones,
+    weather), prefer garmin_activity_detail — much smaller output.
+    """
+    conn = get_connection()
+    try:
+        total_row = query(
+            conn,
+            "SELECT COUNT(*) AS n FROM activity_trackpoints WHERE activity_id = ?",
+            [activity_id],
+        )
+        total = total_row[0]["n"] if total_row else 0
+        if total == 0:
+            return json.dumps(
+                {
+                    "activity_id": activity_id,
+                    "total_count": 0,
+                    "hint": "No trackpoints stored for this activity. Run "
+                    "'garmin-givemydata --rebuild-trackpoints' to backfill from FIT files, "
+                    "or 'garmin-givemydata' (which now parses trackpoints by default).",
+                },
+                indent=2,
+            )
+
+        points = query(
+            conn,
+            """SELECT seq, timestamp_utc, latitude, longitude, altitude_m,
+                      distance_m, speed_mps, heart_rate_bpm, cadence,
+                      power_w, temperature_c
+               FROM activity_trackpoints
+               WHERE activity_id = ?
+               ORDER BY seq
+               LIMIT ? OFFSET ?""",
+            [activity_id, limit, offset],
+        )
+        return json.dumps(
+            {
+                "activity_id": activity_id,
+                "total_count": total,
+                "returned": len(points),
+                "offset": offset,
+                "trackpoints": points,
+            },
+            indent=2,
+            default=str,
+        )
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
 # garmin_sleep
 # ---------------------------------------------------------------------------
 

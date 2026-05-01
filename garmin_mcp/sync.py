@@ -45,7 +45,7 @@ def _parse_trackpoints_for_activities(conn, activity_ids):
     return total_trackpoints
 
 
-def incremental_sync(target_date: str = None, save_raw: bool = False, parse_trackpoints: bool = False) -> dict:
+def incremental_sync(target_date: str = None, save_raw: bool = False, parse_trackpoints: bool = True) -> dict:
     """Fetch today's data from Garmin and save directly to the database.
 
     Parameters
