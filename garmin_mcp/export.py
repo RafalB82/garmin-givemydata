@@ -331,6 +331,10 @@ def export_json_tables(output_dir: Path):
                     full = json.loads(raw)
                 except (json.JSONDecodeError, TypeError):
                     full = {}
+                # Some tables (e.g. activity_hr_zones) store a JSON array
+                # at the root. Wrap it so we can still attach __columns.
+                if not isinstance(full, dict):
+                    full = {"items": full}
                 # Add our structured columns on top (they're cleaner/normalized)
                 for k, v in row.items():
                     if k != "raw_json" and v is not None:
