@@ -15,6 +15,7 @@ import os as _os
 import shutil
 import signal
 import sys
+import threading
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -73,6 +74,12 @@ class _ProcessLifecycle:
 
     def install(self):
         atexit.register(self._on_exit)
+        # signal.signal() can only be called from the main thread. When the
+        # MCP server runs sync in a ThreadPoolExecutor worker (server.py),
+        # this hits a non-main thread and raises ValueError. Skip signal
+        # registration in that case — atexit still fires for cleanup. See #35.
+        if threading.current_thread() is not threading.main_thread():
+            return
         for sig in (signal.SIGTERM, signal.SIGINT):
             signal.signal(sig, self._on_signal)
         if hasattr(signal, "SIGHUP"):
