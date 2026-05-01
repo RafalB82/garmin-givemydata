@@ -60,6 +60,21 @@ First run prompts for credentials, launches a headless browser, and fetches your
 
 Add the MCP server to Claude Code, Claude Desktop, or any MCP client. The config depends on how you installed:
 
+**Claude Code (one-liner)** — registers the server at user scope so it's available in every project:
+
+```bash
+# pip / brew install
+claude mcp add -s user garmin -- garmin-mcp
+
+# git clone
+claude mcp add -s user garmin \
+  -e GARMIN_DATA_DIR=/absolute/path/to/garmin-givemydata \
+  -- /absolute/path/to/garmin-givemydata/venv/bin/python \
+     /absolute/path/to/garmin-givemydata/run_mcp.py
+```
+
+Verify with `claude mcp list`. Skip the manual JSON below.
+
 **Homebrew or pip install** — `garmin-mcp` is already in your PATH:
 
 ```json
@@ -463,6 +478,8 @@ If PowerShell blocks the activate script: `Set-ExecutionPolicy -ExecutionPolicy 
 **Script crashed**: Don't close the Chrome window manually. The tool handles shutdown — killing Chrome mid-run corrupts the profile. Run again (stale locks are auto-cleaned).
 
 **"Python not found"**: Make sure Python 3.10+ is on your PATH. macOS: `brew install python@3.12`. Ubuntu: `sudo apt install python3.12 python3.12-venv`.
+
+**`ensurepip is not available` / venv creation fails**: Your system Python is missing the venv module. Install the matching package: `sudo apt install python3.X-venv` (replace `X` with your minor version — `python3 --version` to check). On Ubuntu with Python 3.14, that's `python3.14-venv`. The `setup.sh` script auto-detects Python but can't auto-install the venv package.
 
 **403 or session errors**: Session expired (often from IP change — `cf_clearance` is IP-bound). Delete the browser profile and re-login.
 
