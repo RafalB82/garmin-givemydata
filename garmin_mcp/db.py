@@ -712,6 +712,19 @@ def init_db(conn: sqlite3.Connection) -> None:
     if needs_cal_backfill:
         backfill_calories_from_daily_summaries(conn)
 
+    needs_bb_backfill = conn.execute(
+        """SELECT 1 FROM daily_summary ds
+           LEFT JOIN body_battery bb ON bb.calendar_date = ds.calendar_date
+           WHERE (ds.body_battery_highest IS NOT NULL
+                  OR ds.body_battery_lowest IS NOT NULL
+                  OR ds.body_battery_charged IS NOT NULL
+                  OR ds.body_battery_drained IS NOT NULL)
+             AND (bb.calendar_date IS NULL OR bb.highest IS NULL)
+           LIMIT 1"""
+    ).fetchone()
+    if needs_bb_backfill:
+        backfill_body_battery_from_daily_summaries(conn)
+
     conn.commit()
 
 
@@ -945,6 +958,46 @@ def upsert_daily_summary(conn: sqlite3.Connection, record: dict) -> None:
         },
     )
     upsert_calories_from_daily_summary(conn, record)
+    upsert_body_battery_from_daily_summary(conn, record)
+
+
+def upsert_body_battery_from_daily_summary(conn: sqlite3.Connection, record: dict) -> None:
+    """Backfill body_battery aggregate columns from a daily_summary record.
+
+    The body_battery_events endpoint only returns time-series data; the
+    aggregates (highest/lowest/charged/drained/etc.) live in daily_summary.
+    Mirrors upsert_calories_from_daily_summary.
+
+    raw_json is intentionally not touched here so the events-endpoint
+    time-series payload (when present) is preserved.
+    """
+    d = record.get("calendarDate")
+    if not d:
+        return
+    charged = record.get("bodyBatteryChargedValue")
+    drained = record.get("bodyBatteryDrainedValue")
+    highest = record.get("bodyBatteryHighestValue")
+    lowest = record.get("bodyBatteryLowestValue")
+    most_recent = record.get("bodyBatteryMostRecentValue")
+    at_wake = record.get("bodyBatteryAtWakeTime")
+    during_sleep = record.get("bodyBatteryDuringSleep")
+    if all(v is None for v in (charged, drained, highest, lowest, most_recent, at_wake, during_sleep)):
+        return
+    conn.execute(
+        """
+        INSERT INTO body_battery (calendar_date, charged, drained, highest, lowest, most_recent, at_wake, during_sleep)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(calendar_date) DO UPDATE SET
+            charged      = excluded.charged,
+            drained      = excluded.drained,
+            highest      = excluded.highest,
+            lowest       = excluded.lowest,
+            most_recent  = excluded.most_recent,
+            at_wake      = excluded.at_wake,
+            during_sleep = excluded.during_sleep
+        """,
+        (d, charged, drained, highest, lowest, most_recent, at_wake, during_sleep),
+    )
 
 
 def upsert_calories_from_daily_summary(conn: sqlite3.Connection, record: dict) -> None:
@@ -1003,6 +1056,47 @@ def backfill_calories_from_daily_summaries(conn: sqlite3.Connection) -> None:
               ds.bmr_kilocalories IS NOT NULL OR
               ds.remaining_kilocalories IS NOT NULL
           )
+        """
+    )
+
+
+def backfill_body_battery_from_daily_summaries(conn: sqlite3.Connection) -> None:
+    """Backfill body_battery aggregate columns from daily_summary.
+
+    Historically body_battery rows were created from the body_battery_events
+    endpoint which only contains time-series data — the aggregate columns
+    (highest/lowest/charged/drained/etc.) were left NULL even though the
+    same values lived in daily_summary the whole time. See issue #13.
+
+    Inserts a body_battery row for any daily_summary date that doesn't have
+    one, and fills NULL aggregate columns on existing rows. raw_json is left
+    untouched so events-endpoint time-series data is preserved.
+    """
+    conn.execute(
+        """
+        INSERT INTO body_battery (calendar_date, charged, drained, highest, lowest, most_recent, at_wake, during_sleep)
+        SELECT
+            ds.calendar_date,
+            ds.body_battery_charged,
+            ds.body_battery_drained,
+            ds.body_battery_highest,
+            ds.body_battery_lowest,
+            ds.body_battery_most_recent,
+            ds.body_battery_at_wake,
+            ds.body_battery_during_sleep
+        FROM daily_summary ds
+        WHERE ds.body_battery_highest IS NOT NULL
+           OR ds.body_battery_lowest IS NOT NULL
+           OR ds.body_battery_charged IS NOT NULL
+           OR ds.body_battery_drained IS NOT NULL
+        ON CONFLICT(calendar_date) DO UPDATE SET
+            charged      = COALESCE(body_battery.charged, excluded.charged),
+            drained      = COALESCE(body_battery.drained, excluded.drained),
+            highest      = COALESCE(body_battery.highest, excluded.highest),
+            lowest       = COALESCE(body_battery.lowest, excluded.lowest),
+            most_recent  = COALESCE(body_battery.most_recent, excluded.most_recent),
+            at_wake      = COALESCE(body_battery.at_wake, excluded.at_wake),
+            during_sleep = COALESCE(body_battery.during_sleep, excluded.during_sleep)
         """
     )
 
