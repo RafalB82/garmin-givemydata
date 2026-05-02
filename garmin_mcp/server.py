@@ -425,6 +425,13 @@ _sync_state: dict = {
     "last_result": None,
 }
 
+# Hard cap on a single sync operation. The synchronous code this replaced
+# enforced 300s; raised to 600s here because the bg pattern means we can't
+# return a partial result, so giving the browser more headroom is cheap.
+# Without this, a hung browser would hold _sync_lock forever and every
+# future garmin_sync(refresh=True) would return "in_progress".
+SYNC_TIMEOUT_SEC = 600
+
 
 def _start_background_sync() -> dict:
     """Start the browser-based sync in a daemon thread; return immediately.
@@ -434,6 +441,7 @@ def _start_background_sync() -> dict:
     immediately lets the caller poll status via garmin_sync(refresh=False).
     See issue #35.
     """
+    import concurrent.futures
     from datetime import datetime, timezone
 
     if not _sync_lock.acquire(blocking=False):
@@ -447,10 +455,20 @@ def _start_background_sync() -> dict:
     _sync_state.update(running=True, started_at=started_at, finished_at=None, last_result=None)
 
     def _bg():
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         try:
             from .sync import incremental_sync
 
-            _sync_state["last_result"] = incremental_sync()
+            future = pool.submit(incremental_sync)
+            try:
+                _sync_state["last_result"] = future.result(timeout=SYNC_TIMEOUT_SEC)
+            except concurrent.futures.TimeoutError:
+                log.warning("sync exceeded %ds, abandoning", SYNC_TIMEOUT_SEC)
+                _sync_state["last_result"] = {
+                    "status": "error",
+                    "error": f"Sync exceeded the {SYNC_TIMEOUT_SEC}s timeout. The browser may be hung; check server logs.",
+                }
+                pool.shutdown(wait=False, cancel_futures=True)
         except Exception:
             log.exception("sync failed")
             _sync_state["last_result"] = {
@@ -458,13 +476,26 @@ def _start_background_sync() -> dict:
                 "error": "Sync failed. Check server logs.",
             }
         finally:
+            pool.shutdown(wait=False)
             _sync_state.update(
                 running=False,
                 finished_at=datetime.now(timezone.utc).isoformat(),
             )
             _sync_lock.release()
 
-    threading.Thread(target=_bg, daemon=True, name="garmin-sync").start()
+    try:
+        threading.Thread(target=_bg, daemon=True, name="garmin-sync").start()
+    except RuntimeError:
+        # Thread creation failed (resource exhaustion). Release the lock and
+        # surface the failure so the caller doesn't silently see "started"
+        # for a sync that will never run.
+        _sync_state.update(running=False)
+        _sync_lock.release()
+        log.exception("failed to start garmin-sync thread")
+        return {
+            "status": "error",
+            "error": "Failed to start sync thread (resource exhaustion). Check server logs.",
+        }
 
     return {
         "status": "started",
