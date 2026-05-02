@@ -715,11 +715,21 @@ def init_db(conn: sqlite3.Connection) -> None:
     needs_bb_backfill = conn.execute(
         """SELECT 1 FROM daily_summary ds
            LEFT JOIN body_battery bb ON bb.calendar_date = ds.calendar_date
-           WHERE (ds.body_battery_highest IS NOT NULL
-                  OR ds.body_battery_lowest IS NOT NULL
-                  OR ds.body_battery_charged IS NOT NULL
-                  OR ds.body_battery_drained IS NOT NULL)
-             AND (bb.calendar_date IS NULL OR bb.highest IS NULL)
+           WHERE (ds.body_battery_highest      IS NOT NULL
+                  OR ds.body_battery_lowest        IS NOT NULL
+                  OR ds.body_battery_charged       IS NOT NULL
+                  OR ds.body_battery_drained       IS NOT NULL
+                  OR ds.body_battery_most_recent   IS NOT NULL
+                  OR ds.body_battery_at_wake       IS NOT NULL
+                  OR ds.body_battery_during_sleep  IS NOT NULL)
+             AND (bb.calendar_date IS NULL
+                  OR (bb.highest      IS NULL AND ds.body_battery_highest      IS NOT NULL)
+                  OR (bb.lowest       IS NULL AND ds.body_battery_lowest       IS NOT NULL)
+                  OR (bb.charged      IS NULL AND ds.body_battery_charged      IS NOT NULL)
+                  OR (bb.drained      IS NULL AND ds.body_battery_drained      IS NOT NULL)
+                  OR (bb.most_recent  IS NULL AND ds.body_battery_most_recent  IS NOT NULL)
+                  OR (bb.at_wake      IS NULL AND ds.body_battery_at_wake      IS NOT NULL)
+                  OR (bb.during_sleep IS NULL AND ds.body_battery_during_sleep IS NOT NULL))
            LIMIT 1"""
     ).fetchone()
     if needs_bb_backfill:
@@ -988,13 +998,13 @@ def upsert_body_battery_from_daily_summary(conn: sqlite3.Connection, record: dic
         INSERT INTO body_battery (calendar_date, charged, drained, highest, lowest, most_recent, at_wake, during_sleep)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(calendar_date) DO UPDATE SET
-            charged      = excluded.charged,
-            drained      = excluded.drained,
-            highest      = excluded.highest,
-            lowest       = excluded.lowest,
-            most_recent  = excluded.most_recent,
-            at_wake      = excluded.at_wake,
-            during_sleep = excluded.during_sleep
+            charged      = COALESCE(excluded.charged,      body_battery.charged),
+            drained      = COALESCE(excluded.drained,      body_battery.drained),
+            highest      = COALESCE(excluded.highest,      body_battery.highest),
+            lowest       = COALESCE(excluded.lowest,       body_battery.lowest),
+            most_recent  = COALESCE(excluded.most_recent,  body_battery.most_recent),
+            at_wake      = COALESCE(excluded.at_wake,      body_battery.at_wake),
+            during_sleep = COALESCE(excluded.during_sleep, body_battery.during_sleep)
         """,
         (d, charged, drained, highest, lowest, most_recent, at_wake, during_sleep),
     )
@@ -1085,10 +1095,13 @@ def backfill_body_battery_from_daily_summaries(conn: sqlite3.Connection) -> None
             ds.body_battery_at_wake,
             ds.body_battery_during_sleep
         FROM daily_summary ds
-        WHERE ds.body_battery_highest IS NOT NULL
-           OR ds.body_battery_lowest IS NOT NULL
-           OR ds.body_battery_charged IS NOT NULL
-           OR ds.body_battery_drained IS NOT NULL
+        WHERE ds.body_battery_highest      IS NOT NULL
+           OR ds.body_battery_lowest       IS NOT NULL
+           OR ds.body_battery_charged      IS NOT NULL
+           OR ds.body_battery_drained      IS NOT NULL
+           OR ds.body_battery_most_recent  IS NOT NULL
+           OR ds.body_battery_at_wake      IS NOT NULL
+           OR ds.body_battery_during_sleep IS NOT NULL
         ON CONFLICT(calendar_date) DO UPDATE SET
             charged      = COALESCE(body_battery.charged, excluded.charged),
             drained      = COALESCE(body_battery.drained, excluded.drained),
@@ -1417,13 +1430,32 @@ def upsert_respiration(conn: sqlite3.Connection, record: dict, cal_date: str = N
 
 
 def upsert_body_battery(conn: sqlite3.Connection, record: dict, cal_date: str = None) -> None:
+    """Upsert a body_battery row from the events endpoint.
+
+    The events payload only carries time-series data, not the per-day
+    aggregate values (which live in daily_summary and are written via
+    upsert_body_battery_from_daily_summary). Use COALESCE on every
+    aggregate column so that calling this *after* the daily_summary path
+    does not erase the aggregates with NULLs from the events payload.
+    raw_json is always replaced with the latest events payload.
+    """
     d = cal_date or record.get("calendarDate") or record.get("date")
     if not d:
         return
     conn.execute(
-        """INSERT OR REPLACE INTO body_battery
+        """INSERT INTO body_battery
            (calendar_date, charged, drained, highest, lowest, most_recent, at_wake, during_sleep, raw_json)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(calendar_date) DO UPDATE SET
+               charged      = COALESCE(excluded.charged,      body_battery.charged),
+               drained      = COALESCE(excluded.drained,      body_battery.drained),
+               highest      = COALESCE(excluded.highest,      body_battery.highest),
+               lowest       = COALESCE(excluded.lowest,       body_battery.lowest),
+               most_recent  = COALESCE(excluded.most_recent,  body_battery.most_recent),
+               at_wake      = COALESCE(excluded.at_wake,      body_battery.at_wake),
+               during_sleep = COALESCE(excluded.during_sleep, body_battery.during_sleep),
+               raw_json     = excluded.raw_json
+        """,
         (
             d,
             record.get("bodyBatteryChargedValue") or record.get("charged"),

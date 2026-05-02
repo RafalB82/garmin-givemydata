@@ -77,6 +77,47 @@ class TestUpsertBodyBatteryFromDailySummary:
         upsert_body_battery_from_daily_summary(temp_db, {"bodyBatteryHighestValue": 99})
         assert temp_db.execute("SELECT COUNT(*) FROM body_battery").fetchone()[0] == 0
 
+    def test_partial_daily_summary_does_not_clobber_existing_aggregates(self, temp_db):
+        # Realistic: a sync sets {highest, lowest, charged}. A later sync of
+        # the same date returns a partial daily_summary that only has highest.
+        # The other fields must not be wiped to NULL.
+        upsert_body_battery_from_daily_summary(
+            temp_db, _ds("2026-05-01", highest=99, lowest=47, charged=53, at_wake=99)
+        )
+        upsert_body_battery_from_daily_summary(temp_db, _ds("2026-05-01", highest=80))
+        row = _bb_row(temp_db, "2026-05-01")
+        assert row["highest"] == 80  # latest value wins
+        assert row["lowest"] == 47  # preserved
+        assert row["charged"] == 53  # preserved
+        assert row["at_wake"] == 99  # preserved
+
+
+class TestUpsertBodyBatteryEventsOrdering:
+    """Real sync order is daily_summary FIRST, body_battery_events AFTER.
+    The events upsert must not wipe the aggregates that daily_summary just
+    populated (issue #13 + Copilot review on PR #40).
+    """
+
+    def test_events_payload_after_daily_summary_preserves_aggregates(self, temp_db):
+        # Step 1: daily_summary populates aggregates
+        upsert_body_battery_from_daily_summary(
+            temp_db, _ds("2026-05-01", highest=99, lowest=47, charged=53, drained=54, at_wake=99)
+        )
+        # Step 2: events endpoint fires with time-series data, no aggregates
+        events_payload = {"bodyBattery": {"data": [["2026-05-01T22:00", 50, 1, 3]]}}
+        upsert_body_battery(temp_db, events_payload, cal_date="2026-05-01")
+
+        row = _bb_row(temp_db, "2026-05-01")
+        # Aggregates from daily_summary must survive the events upsert
+        assert row["highest"] == 99
+        assert row["lowest"] == 47
+        assert row["charged"] == 53
+        assert row["drained"] == 54
+        assert row["at_wake"] == 99
+        # raw_json now reflects the events payload (the time-series is what
+        # the body_battery row's raw_json is meant to hold)
+        assert "bodyBattery" in json.loads(row["raw_json"])
+
 
 class TestBackfillBodyBatteryFromDailySummaries:
     def test_inserts_missing_rows_and_fills_existing_nulls(self, temp_db):
