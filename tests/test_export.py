@@ -50,7 +50,7 @@ class TestExportJsonTables(unittest.TestCase):
             output_dir = tmpdir / "out"
             self._run_export(db_path, output_dir)
 
-            payload = json.loads((output_dir / "activity_hr_zones.json").read_text())
+            payload = json.loads((output_dir / "activity_hr_zones.json").read_text(encoding="utf-8"))
             self.assertEqual(len(payload), 1)
             self.assertEqual(payload[0]["items"], zones)
             self.assertEqual(payload[0]["__activity_id"], 12345)
@@ -70,7 +70,7 @@ class TestExportJsonTables(unittest.TestCase):
             output_dir = tmpdir / "out"
             self._run_export(db_path, output_dir)
 
-            payload = json.loads((output_dir / "activity.json").read_text())
+            payload = json.loads((output_dir / "activity.json").read_text(encoding="utf-8"))
             self.assertEqual(payload[0]["avgHr"], 135)
             self.assertEqual(payload[0]["maxHr"], 170)
             self.assertEqual(payload[0]["__activity_id"], 12345)
