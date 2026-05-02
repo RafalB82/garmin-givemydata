@@ -57,6 +57,42 @@ _XVFB_SCREEN = "1920x1080x24"
 _SENTINEL = ".garmin_clean_exit"
 
 
+def _activities_in_range(activities: list, s_date: str, e_date: str) -> tuple:
+    """Filter a page of activities to those within [s_date, e_date].
+
+    Garmin's activitylist endpoint accepts ``startDate``/``endDate`` query
+    params but does not appear to honour them — see issue #23, where Dave
+    confirmed all 3,500+ activities were returned even with a 1-day window.
+    Activities are returned newest-first, so once we see one older than
+    ``s_date`` we know no later page can match and the caller can stop
+    paginating.
+
+    Returns
+    -------
+    (in_range, saw_older) : tuple[list, bool]
+        in_range : the activities that fell within the requested window
+        saw_older : True if any activity in this page is older than s_date
+                    (signal to break out of the pagination loop)
+    """
+    in_range = []
+    saw_older = False
+    for a in activities:
+        if not isinstance(a, dict):
+            continue
+        start_local = (a.get("startTimeLocal") or "")[:10]  # YYYY-MM-DD
+        if not start_local:
+            # Missing timestamp — include defensively rather than drop
+            in_range.append(a)
+            continue
+        if start_local < s_date:
+            saw_older = True
+            continue
+        if start_local > e_date:
+            continue
+        in_range.append(a)
+    return in_range, saw_older
+
+
 # ─── Process lifecycle ───────────────────────────────────────────
 
 
@@ -951,7 +987,11 @@ class GarminClient:
         full = self._fetch_batch(full_rest, full_gql)
         _process_batch(full)
 
-        # 2b. Paginate remaining activities within the date range
+        # 2b. Paginate remaining activities within the date range.
+        # Garmin's API ignores startDate/endDate on this endpoint (issue #23),
+        # so we filter client-side and break out as soon as a page contains
+        # an activity older than s_date — the response is reverse-chronological,
+        # so older pages can't have any matches.
         page_start = 100
         while True:
             act_result = self._fetch_batch(
@@ -964,16 +1004,27 @@ class GarminClient:
             activities_page = page_data["data"]
             if not isinstance(activities_page, list) or len(activities_page) == 0:
                 break
-            print(f"    Activities page: fetched {len(activities_page)} more (offset {page_start})")
-            _remember_activity_ids(activities_page)
-            if on_batch:
-                for a in activities_page:
-                    on_batch("activities", a)
-            else:
-                for a in activities_page:
-                    if "activities" not in all_results:
-                        all_results["activities"] = {"status": 200, "data": []}
-                    all_results["activities"]["data"].append(a)
+
+            in_range, saw_older = _activities_in_range(activities_page, s_date, e_date)
+
+            if in_range:
+                print(
+                    f"    Activities page: {len(in_range)} in range "
+                    f"(of {len(activities_page)} fetched, offset {page_start})"
+                )
+                _remember_activity_ids(in_range)
+                if on_batch:
+                    for a in in_range:
+                        on_batch("activities", a)
+                else:
+                    for a in in_range:
+                        if "activities" not in all_results:
+                            all_results["activities"] = {"status": 200, "data": []}
+                        all_results["activities"]["data"].append(a)
+
+            if saw_older:
+                # Newest-first ordering: any later page would also be older.
+                break
             page_start += 100
             if len(activities_page) < 100:
                 break
