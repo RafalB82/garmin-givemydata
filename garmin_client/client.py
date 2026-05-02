@@ -985,6 +985,24 @@ class GarminClient:
         full_rest = full_range_rest(self._display_name, s_date, e_date)
         full_gql = full_range_graphql(self._display_name, s_date, e_date)
         full = self._fetch_batch(full_rest, full_gql)
+
+        # Apply the same client-side date filter to the offset-0 page that
+        # full_range_rest fetches — Garmin's API ignores startDate/endDate
+        # here (issue #23), so without this we'd upsert out-of-range
+        # activities and always make at least one wasted offset=100 call.
+        skip_pagination = False
+        first_page = full.get("activities") or {}
+        if first_page.get("status") == 200 and isinstance(first_page.get("data"), list):
+            raw_first = first_page["data"]
+            in_range, saw_older = _activities_in_range(raw_first, s_date, e_date)
+            first_page["data"] = in_range
+            # Skip pagination if either:
+            #  - the page already contains an activity older than s_date
+            #    (no later page can match — they're even older), or
+            #  - Garmin returned fewer than the page limit (no more rows)
+            if saw_older or len(raw_first) < 100:
+                skip_pagination = True
+
         _process_batch(full)
 
         # 2b. Paginate remaining activities within the date range.
@@ -993,7 +1011,7 @@ class GarminClient:
         # an activity older than s_date — the response is reverse-chronological,
         # so older pages can't have any matches.
         page_start = 100
-        while True:
+        while not skip_pagination:
             act_result = self._fetch_batch(
                 {f"activities_page_{page_start}": activities_search_url(s_date, e_date, offset=page_start)},
                 {},
