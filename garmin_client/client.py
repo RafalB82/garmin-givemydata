@@ -315,6 +315,7 @@ class GarminClient:
             uc=True,
             user_data_dir=str(self.profile_dir),
             locale_code="en-US",
+	    chromium_arg="--disable-dev-shm-usage,--disable-gpu,--disable-software-rasterizer,--window-size=1920,1080",
         )
         if use_headless2:
             driver_kwargs["headless2"] = True
@@ -325,7 +326,7 @@ class GarminClient:
             self._stop_xvfb()
             raise
 
-        self._driver.set_script_timeout(120)
+        self._driver.set_script_timeout(180)
 
         last_exit_clean = self._check_sentinel()
         if not last_exit_clean:
