@@ -1,0 +1,44 @@
+services:
+  garmin-mcp:
+    image: python:3.13-slim
+    container_name: garmin-mcp
+    restart: unless-stopped
+    networks:
+      - hevy_network
+    volumes:
+      - type: bind
+        source: /home/rafal/garmin-givemydata
+        target: /app
+      - garmin-mcp-venv:/venv
+    working_dir: /app
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -e
+        echo "PWD=$(pwd)"
+        ls -la /app
+        ls -la /app/requirements.txt
+
+        if [ ! -f /venv/bin/python ]; then
+          python3 -m venv /venv
+        fi
+
+        /venv/bin/pip install --no-cache-dir -U pip
+        /venv/bin/pip install --no-cache-dir -r /app/requirements.txt
+        /venv/bin/pip install --no-cache-dir mcp-proxy
+
+        exec /venv/bin/mcp-proxy --port 8080 --host 0.0.0.0 --allow-origin='*' -- /venv/bin/python /app/run_mcp.py
+    labels:
+      - 'traefik.enable=true'
+      - 'traefik.http.routers.garmin-mcp.rule=Host(`garmin.ifixthis.pro`)'
+      - 'traefik.http.routers.garmin-mcp.entrypoints=websecure'
+      - 'traefik.http.routers.garmin-mcp.tls=true'
+      - 'traefik.http.routers.garmin-mcp.tls.certresolver=letsencrypt'
+      - 'traefik.http.services.garmin-mcp.loadbalancer.server.port=8080'
+
+networks:
+  hevy_network:
+    external: true
+
+volumes:
+  garmin-mcp-venv:
